@@ -1,0 +1,14 @@
+# build outputs and local work folders
+venv/
+.venv/
+__pycache__/
+*.pyc
+.build/
+img/
+out/
+*.pdf
+.DS_Store
+# never commit secrets
+.env
+*.key
+credentials*.json
