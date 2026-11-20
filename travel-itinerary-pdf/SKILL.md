@@ -38,6 +38,9 @@ WORK=<temp dir>/trip                   # never inside the skill folder
 mkdir -p $WORK/img
 $SK/scripts/preflight.sh $WORK --fix   # builds $WORK/venv (pymupdf, playwright, pillow) + Chromium, checks network
 ```
+Use Python 3.12.13 (see `.python-version`), setting `PYTHON_BIN` for setup if needed.
+`requirements.txt` pins the full dependency toolchain. Preflight returns nonzero on any unresolved required check;
+resolve failures before building. Network HTTP responses prove connectivity only, not live-price access.
 Read each `MISSING`/`FAIL` line; its text after `::` is the fix.
 - `python3` / `jq` / `curl` missing: these are system installs. Ask once with AskUserQuestion ("Install jq with
   Homebrew?" → "Yes, install it" / "I'll do it myself"), then run `brew install <pkg>` (macOS) or give the apt command.
@@ -184,6 +187,29 @@ Copy `templates/trips_example.py` to `$WORK/trips.py` and edit:
 ```bash
 $WORK/venv/bin/python $SK/scripts/build.py $WORK/trips.py $WORK/img "<working dir>"
 ```
+
+### 6b. Required rate evidence before building
+The builder does not fetch prices. For **every** selected flight quote, flight alternative and hotel rate,
+record the real source name, HTTP(S) search/booking URL, ISO `captured_at` timestamp with timezone, `currency="INR"`,
+and `amount` (the displayed whole-party/stay total including taxes). Attach these as a `rate` dictionary to
+`flights` and each hotel, and as the sixth element of every flight option tuple.
+
+Set `META.departure_date` / `return_date` and each hotel's `checkin_date` / `checkout_date` to ISO dates.
+The evidence `context` must match the exact dates, party, route/fare or property/room/meal selection.
+See `scripts/rates.py`: `flight_context(META, flights, option=None)` and `hotel_context(META, hotel)` define
+all required context keys. Read the actual result before constructing this record; never invent or refresh a
+capture timestamp without re-searching. URLs, capture times and sources print next to each rate.
+
+Normal builds reject missing, invalid, future-dated or older-than-24-hour evidence before creating any PDFs.
+If a rate cannot be checked, re-search or stop and report what is missing. `--allow-unverified` is only for
+historical/sample demonstrations: it marks all prices UNVERIFIED SAMPLE and must not be used for a live quote.
+
+Only print confirmed cancellation terms: attach `cancellation={"text": ..., "evidence": ...}` to selected
+flights/hotels. Policy evidence requires the same fields and matching rate context as price evidence and a fresh
+capture. For flights describe both selected legs/fare families separately where terms differ. For hotels include
+actual deadlines with timezone and fees/prepayment terms. Missing/stale/unmatched evidence renders an explicit
+“Not verified” fallback. Legacy `policy` strings are ignored. Never infer non-refundable/non-changeable or free
+cancellation from provider defaults, another fare, another room, or a property's general policy.
 
 ### 7. Review (always)
 Render every page with PyMuPDF at ~55 dpi into a 5-across contact sheet and look at it; zoom a day page and the last

@@ -1,47 +1,44 @@
 #!/bin/bash
-# Preflight check for the travel-itinerary-pdf skill.
-# usage: preflight.sh <work_dir> [--fix]
-#   Checks local tools, the Python venv, Chromium and network reach. With --fix it builds the venv
-#   (pip + playwright chromium inside <work_dir>/venv). It never installs system packages or edits
-#   MCP config: those are printed as commands for the user / Claude to run after asking.
-# Output: one line per check, "OK|MISSING|FAIL <name> :: <fix>", then a summary line.
-WORK="${1:?usage: preflight.sh <work_dir> [--fix]}"; FIX="$2"
+# Checks all requirements; --fix installs only in the supplied work directory.
+set -uo pipefail
+WORK="${1:?usage: preflight.sh <work_dir> [--fix]}"
+FIX="${2:-}"
+if [ -n "$FIX" ] && [ "$FIX" != "--fix" ]; then
+  echo 'usage: preflight.sh <work_dir> [--fix]' >&2
+  exit 2
+fi
 SK="$(cd "$(dirname "$0")/.." && pwd)"
-PY="$WORK/venv/bin/python"; bad=0
+PY="$WORK/venv/bin/python"
+bad=0
 ok(){ echo "OK      $1"; }
 no(){ echo "MISSING $1 :: $2"; bad=$((bad+1)); }
 fail(){ echo "FAIL    $1 :: $2"; bad=$((bad+1)); }
-
-# --- system tools
-command -v python3 >/dev/null && ok "python3 ($(python3 --version 2>&1))" || no python3 "brew install python  (macOS) | sudo apt install python3 python3-venv"
-command -v jq >/dev/null && ok jq || no jq "brew install jq | sudo apt install jq"
-command -v curl >/dev/null && ok curl || no curl "brew install curl | sudo apt install curl"
-command -v npx >/dev/null && ok "npx (for optional local MCP servers)" || echo "INFO    npx not found: only needed to run a local Firecrawl MCP (brew install node)"
-
-# --- python venv + packages
-if [ ! -x "$PY" ] && [ "$FIX" = "--fix" ]; then
-  echo "...     creating venv in $WORK/venv"; "$SK/scripts/setup_env.sh" "$WORK" >/dev/null 2>&1
+for tool in jq curl; do
+  command -v "$tool" >/dev/null 2>&1 && ok "$tool" || no "$tool" "Install $tool with your system package manager"
+done
+if [ "$FIX" = '--fix' ]; then
+  "$SK/scripts/setup_env.sh" "$WORK" || fail setup "setup_env.sh failed; see output above"
 fi
 if [ -x "$PY" ]; then
-  for m in pymupdf playwright PIL; do
-    "$PY" -c "import $m" 2>/dev/null && ok "python module $m" || {
-      if [ "$FIX" = "--fix" ]; then "$WORK/venv/bin/pip" install -q pymupdf playwright pillow >/dev/null 2>&1 && ok "python module $m (installed)" || fail "python module $m" "$WORK/venv/bin/pip install pymupdf playwright pillow"; else no "python module $m" "$SK/scripts/preflight.sh $WORK --fix"; fi; }
-  done
-  if "$PY" - <<'EOF' 2>/dev/null; then ok "chromium for PDF rendering"; else
+  "$PY" "$SK/scripts/check_toolchain.py" && ok 'pinned Python toolchain' || fail toolchain "Run preflight.sh $WORK --fix with Python $(cat "$SK/.python-version")"
+  if "$PY" - <<'PY'
 from playwright.sync_api import sync_playwright
-with sync_playwright() as p: p.chromium.launch().close()
-EOF
-    if [ "$FIX" = "--fix" ]; then "$PY" -m playwright install chromium >/dev/null 2>&1 && ok "chromium (installed)" || fail chromium "$PY -m playwright install chromium"
-    else no chromium "$PY -m playwright install chromium"; fi
+with sync_playwright() as p:
+    p.chromium.launch().close()
+PY
+  then ok 'chromium launch'
+  else fail chromium "Run $PY -m playwright install chromium; check browser launch dependencies"
   fi
 else
-  no "python venv" "$SK/scripts/preflight.sh $WORK --fix   (or $SK/scripts/setup_env.sh $WORK)"
+  no 'python venv' "Run preflight.sh $WORK --fix"
 fi
-
-# --- network reach (photos, fonts, flight sites)
-for u in https://commons.wikimedia.org https://cf.bstatic.com https://fonts.googleapis.com https://www.skyscanner.co.in; do
-  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' -A "Mozilla/5.0" "$u")
-  if [ "$code" != "000" ]; then ok "reach $u"; else fail "reach $u" "no connection (offline, proxy or firewall): photos/fonts/fares from it will be missing"; fi
+# HTTP errors still demonstrate reachability; they do not verify search access or quotes.
+for url in https://commons.wikimedia.org https://cf.bstatic.com https://fonts.googleapis.com https://www.skyscanner.co.in; do
+  if code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' -A 'Mozilla/5.0' "$url") && [ "$code" != '000' ]; then
+    ok "reach $url (HTTP $code; connectivity only)"
+  else
+    fail "reach $url" 'Connection failed; check network/proxy'
+  fi
 done
-
-echo "SUMMARY $bad issue(s)"; exit 0
+echo "SUMMARY $bad issue(s)"
+[ "$bad" -eq 0 ]

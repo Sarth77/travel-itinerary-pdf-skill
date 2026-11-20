@@ -1,13 +1,38 @@
 import json, os, re, sys, html
 import importlib.util, glob
-if len(sys.argv) < 4:
-    sys.exit("usage: build.py <trips.py> <img_dir> <out_dir>")
-_spec = importlib.util.spec_from_file_location("trips", sys.argv[1]); _m = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_m)
-TRIPS, M = _m.TRIPS, _m.META
-CAPTURED = M["captured"]
-IMG = os.path.abspath(sys.argv[2])
-OUT = os.path.abspath(sys.argv[3])
-WORK = os.path.join(OUT, ".build"); os.makedirs(WORK, exist_ok=True)
+from datetime import datetime, timezone
+from rates import validate_rates, flight_context, hotel_context, policy_text, source_text
+
+M = {}; TRIPS = []; credits = {}
+IMG = OUT = WORK = CAPTURED = ""
+NOW = None
+ALLOW_UNVERIFIED = False
+
+
+def configure(meta, trips, image_dir, out_dir, allow_unverified=False, now=None):
+    global M, TRIPS, IMG, OUT, WORK, CAPTURED, NOW, ALLOW_UNVERIFIED, credits
+    NOW = now or datetime.now(timezone.utc)
+    errors = validate_rates(meta, trips, NOW)
+    if errors and not allow_unverified:
+        raise ValueError("Rate validation failed:\n" + "\n".join(errors))
+    M, TRIPS = meta, trips
+    IMG, OUT = os.path.abspath(image_dir), os.path.abspath(out_dir)
+    WORK = os.path.join(OUT, ".build")
+    ALLOW_UNVERIFIED = allow_unverified
+    CAPTURED = "UNVERIFIED SAMPLE" if allow_unverified else "Within 24h; see quote sources"
+    credits = {}
+    for path in sorted(glob.glob(os.path.join(IMG, "credits*.json"))):
+        with open(path) as f:
+            credits.update(json.load(f))
+
+
+def rate_source(record):
+    return "UNVERIFIED SAMPLE — re-search before booking" if ALLOW_UNVERIFIED else source_text(record["rate"])
+
+
+def cancellation(record, context):
+    return policy_text(record, record["price"], context, NOW)
+
 e = html.escape
 
 def inr(n):
@@ -16,10 +41,6 @@ def inr(n):
     while len(rest) > 2: parts.insert(0, rest[-2:]); rest = rest[:-2]
     if rest: parts.insert(0, rest)
     return "₹" + (",".join(parts + [last3]) if parts else last3)
-
-credits = {}
-for p in sorted(glob.glob(os.path.join(IMG, "credits*.json"))):
-    credits.update(json.load(open(p)))
 
 def strip(s):
     s = html.unescape(html.unescape(s or ""))
@@ -170,6 +191,7 @@ table.t tr.rec td{background:#f6fbff}
 .disc{background:var(--sky);border-radius:8px;padding:5mm 6mm;font-size:8pt;color:#444;line-height:1.5;margin-top:5mm}
 .cred{font-size:6.8pt;color:var(--mute);line-height:1.45;margin-top:4mm;columns:2;column-gap:6mm}
 .nobr{break-inside:avoid}
+.src,.pol,.imp li{overflow-wrap:anywhere}
 """
 
 def brand():
@@ -199,10 +221,11 @@ def hotel_block(h):
 <p style="font-size:8.3pt;color:#555">{e(h["area"])}<br>{e(h["near"])}<br><b style="color:var(--ink)">{h["word"]}</b> • {h["reviews"]} Booking.com reviews</p>
 <div class="hmeta"><div>Check In:<b>{e(h["cin"])}</b></div><div>Check Out:<b>{e(h["cout"])}</b></div></div></div></div>
 <div class="room"><h4>{e(h["room"])}</h4>
-<div class="grid"><div><span>Meal Plan</span>{e(h["meal"])}</div><div><span>Bed Type</span>{e(h["bed"])}</div><div><span>Rate today ({h["nights"]}N, incl. taxes)</span><b>{inr(h["price"])}</b></div></div>
+<div class="grid"><div><span>Meal Plan</span>{e(h["meal"])}</div><div><span>Bed Type</span>{e(h["bed"])}</div><div><span>Quoted rate ({h["nights"]}N, incl. taxes)</span><b>{inr(h["price"])}</b></div></div>
 <div style="font-size:8.3pt;font-weight:700;margin-top:3mm">Room Inclusions:</div>
 <ul>{"".join(f"<li>{e(x)}</li>" for x in h["incl"])}</ul>
-<div class="pol"><b>Policy:</b> {e(h["policy"])}</div>
+<div class="src">{e(rate_source(h))}</div>
+<div class="pol"><b>Policy:</b> {e(cancellation(h, hotel_context(M, h)))}</div>
 {f'<div class="hnote">{e(h["note"])}</div>' if h.get("note") else ""}</div></div>'''
     return t
 
@@ -237,11 +260,11 @@ def build(T):
 <div class="hero"><div class="a" style="background-image:url('{img(T["hero"])}')"></div><div style="background-image:url('{img(T["hero2"])}')"></div><div style="background-image:url('{img(T["hero3"])}')"></div></div>
 <p class="quote">{e(T["blurb"])}</p>
 <div class="cols"><div class="contents"><h4>Contents</h4><ol>
-<li><b>1</b>Your Itinerary</li><li><b>2</b>Flight Details (live fares)</li><li><b>3</b>Day Wise Details</li><li><b>4</b>Cost Breakdown</li><li><b>5</b>Important Information &amp; How to Book</li></ol></div>
+<li><b>1</b>Your Itinerary</li><li><b>2</b>Flight Details (quoted fares)</li><li><b>3</b>Day Wise Details</li><li><b>4</b>Cost Breakdown</li><li><b>5</b>Important Information &amp; How to Book</li></ol></div>
 <div class="card" style="flex:1"><small>Prepared for</small><div class="big">{e(who)}</div>
-<div class="kv"><span>Travel dates</span><b>{M["dates_long"]}</b><span>Travellers</span><b>{M["pax"]}, {M["rooms"]}</b>{guests_row}<span>Flights</span><b>{e(M["origin_short"])} ⇄ {e(fl["airport"])}</b><span>Rates captured</span><b>{CAPTURED} (live)</b><span>Weather</span><span style="color:#444">{e(T["weather"])}</span></div></div></div>
+<div class="kv"><span>Travel dates</span><b>{M["dates_long"]}</b><span>Travellers</span><b>{M["pax"]}, {M["rooms"]}</b>{guests_row}<span>Flights</span><b>{e(M["origin_short"])} ⇄ {e(fl["airport"])}</b><span>Rates captured</span><b>{CAPTURED}</b><span>Weather</span><span style="color:#444">{e(T["weather"])}</span></div></div></div>
 <div class="hl"><h4>Highlights</h4><div class="chips">{"".join(f'<div class="chip">{ic(i)}{e(t)}</div>' for i,t in T["highlights"])}<div class="chip">{ic("meal")}Meals budgeted</div></div></div>
-<div class="total"><div><h3>Estimated total for {M["pax"].lower()}</h3><p>Flights and stays are today's live prices; transfers, sightseeing, entry fees and meals are local estimates. Prices change until booked.</p>{status}</div>
+<div class="total"><div><h3>Estimated total for {M["pax"].lower()}</h3><p>{"UNVERIFIED SAMPLE prices; re-search flights and stays before booking." if ALLOW_UNVERIFIED else "Flights and stays are sourced quotes captured within 24 hours; other costs are estimates."} Prices change until booked.</p>{status}</div>
 <div class="amt">{inr(total)}<small>For {M["pax"]} • all-in</small></div></div>
 </div></section>''')
 
@@ -273,20 +296,21 @@ def build(T):
                         "".join(f'<div>{ic(i)}<span>{t}</span></div>' for i, t in ev) + "</div></div>")
     P.append(f'''<section class="flow">{blobs(["width:46mm;height:30mm;left:-14mm;top:0;border-radius:0 0 50% 50%"])}<div class="z">
 <div class="sec">Your Itinerary</div><h1 style="font-size:22pt;margin-bottom:3mm">{e(M["theme"])}</h1>
-<div class="lead">{ic("plane")}Delhi to {e(fl["airport"])} • {nights} nights • {len(T["cities"])} destinations</div>
+<div class="lead">{ic("plane")}{e(M["origin_short"])} to {e(fl["airport"])} • {nights} nights • {len(T["cities"])} destinations</div>
 <div class="summ">{"".join(rows)}</div></div></section>''')
 
     # ---------- FLIGHTS
     opt_rows = "".join(
         f'<tr class="{"rec" if i==0 else ""}"><td><b>{e(o[0])}</b><br><span style="color:var(--mute)">{e(o[4])}</span></td><td>{e(o[1])}</td><td>{e(o[2])}</td><td class="n"><b>{inr(o[3])}</b></td></tr>'
         for i, o in enumerate(fl["options"]))
+    option_sources = "".join(f'<div class="src">Option {i+1}: {e("UNVERIFIED SAMPLE" if ALLOW_UNVERIFIED else source_text(o[5]))}</div>' for i, o in enumerate(fl["options"]))
     P.append(f'''<section class="flow" style="page-break-before:always">{blobs(["width:46mm;height:30mm;left:-14mm;top:0;border-radius:0 0 50% 50%"])}<div class="z">
 <div class="sec">Flight Details</div>
 <div class="fl">{flight_card(fl["out"], fl["out_date"], "ONWARD • Day 1")}{flight_card(fl["ret"], fl["ret_date"], f"RETURN • Day {len(T['days'])}")}</div>
-<div class="total" style="margin-top:4mm"><div><h3>Selected round trip</h3><p>Two one-way tickets combined by {M["flight_source"]}. Book both legs the same day; fares on these routes move several times a day this close to departure.</p></div><div class="amt">{inr(fl["price"])}<small>{M["pax"]} • round trip • economy</small></div></div>
-<h3 style="font-size:12pt;margin:7mm 0 3mm">Live round-trip options (prices for {M["pax"].lower()})</h3>
-<table class="t"><tr><th style="width:30mm">Option</th><th>Onward • {M["out_hdr"]}</th><th>Return • {M["ret_hdr"]}</th><th class="n">Total</th></tr>{opt_rows}</table>
-<div class="src">Source: live {M["flight_source"]} search, {M["origin_code"]} ⇄ {e(fl["airport"])}, {M["dates_search"]}, {M["pax"].lower()}, economy, captured {CAPTURED}. Times are local (IST). All listed fares are non-refundable and non-changeable unless you choose a flexible fare at checkout.</div>
+<div class="total" style="margin-top:4mm"><div><h3>Selected round trip</h3><p>Selected fares from {e("illustrative sample data" if ALLOW_UNVERIFIED else fl["rate"]["source"])}. Book both legs the same day; fares on these routes move several times a day this close to departure.</p></div><div class="amt">{inr(fl["price"])}<small>{M["pax"]} • round trip • economy</small></div></div>
+<h3 style="font-size:12pt;margin:7mm 0 3mm">Quoted round-trip options (prices for {M["pax"].lower()})</h3>
+<table class="t"><tr><th style="width:30mm">Option</th><th>Onward • {M["out_hdr"]}</th><th>Return • {M["ret_hdr"]}</th><th class="n">Total</th></tr>{opt_rows}</table>{option_sources}
+<div class="src">Selected quote: {e(rate_source(fl))}. Times are local to the airports. Alternative fares have their own sources above. Cancellation/change terms vary by fare; see Important Information.</div>
 </div></section>''')
 
     # ---------- DAY WISE
@@ -311,7 +335,7 @@ def build(T):
     # ---------- COST
     lo, hi = int(BL * 0.875), max(int(BH * 1.32), total + int(BH * 0.08))
     pos = lambda v: (v - lo) / (hi - lo) * 100
-    crow = "".join(f'<tr><td>{e(c[0])}</td><td>{e(c[1])}</td><td style="color:var(--mute)">{e(c[3])}</td><td class="n">{inr(c[2])}</td></tr>' for c in T["costs"])
+    crow = "".join(f'<tr><td>{e(c[0])}</td><td>{e(c[1])}</td><td style="color:var(--mute)">{e(("UNVERIFIED SAMPLE" if ALLOW_UNVERIFIED else "Sourced quote (see details)") if c[0] in ("Flights", "Stay") else c[3])}</td><td class="n">{inr(c[2])}</td></tr>' for c in T["costs"])
     sub = {}
     for c in T["costs"]:
         g = {"Flights": "Flights", "Stay": "Stays"}.get(c[0], "Ground, fees & meals")
@@ -326,7 +350,7 @@ def build(T):
 <table class="t"><tr><th style="width:28mm">Item</th><th>Details</th><th style="width:34mm">Basis</th><th class="n">Amount</th></tr>{crow}
 <tr><td colspan="3"><b>Total for {M["pax"].lower()}</b></td><td class="n"><b style="font-size:11pt;color:var(--blue)">{inr(total)}</b></td></tr></table>
 <div class="total" style="margin-top:5mm;display:block"><h3 style="font-size:11.5pt">Budget check {status}</h3><p style="max-width:none">{e(T["budget_note"])}</p></div>
-<div class="src">Live = captured {CAPTURED} from {M["flight_source"]} (flights) and Booking.com (stays, totals include taxes &amp; fees shown at search). Estimate = typical late-2026 rates from local taxi stands, shared-jeep counters and operators; confirm on the day. Not included: travel insurance, tips, shopping, optional activities.</div>
+<div class="src">{"UNVERIFIED SAMPLE: flight/hotel prices are illustrative." if ALLOW_UNVERIFIED else "Flight/hotel quote sources and capture timestamps appear in their detail cards."} Estimates: local transport, fees and meals; confirm with operators. Not included: travel insurance, tips, shopping, optional activities.</div>
 </div></section>''')
 
     # ---------- INFO / HOW TO BOOK
@@ -334,22 +358,36 @@ def build(T):
     for k in T["credits_keys"]:
         c = credits.get(k)
         if c: cred.append(f'{e(c["title"].replace("File:",""))} – {e(strip(c["artist"])) or "Wikimedia Commons"} ({e(c["license"])})')
-    hotels = "".join(f'<li><b>{e(h["name"])}</b>: {e(h["policy"])}</li>' for h in T["hotels"].values())
+    hotels = "".join(f'<li><b>{e(h["name"])}</b>: {e(cancellation(h, hotel_context(M, h)))}</li>' for h in T["hotels"].values())
     P.append(f'''<section class="flow" style="page-break-before:always">{blobs(["width:46mm;height:30mm;left:-14mm;top:0;border-radius:0 0 50% 50%"])}<div class="z">
 <div class="sec">Important Information</div>
 <div class="imp"><span class="hd">IMPORTANT INFORMATION</span><ul>{"".join(f"<li>{e(x)}</li>" for x in T["info"])}</ul></div>
-<div class="imp" style="background:#f4f8fc"><span class="hd" style="background:var(--blue)">CANCELLATION POLICIES</span><ul>{hotels}<li><b>Flights</b>: the listed fares are non-refundable; date changes attract airline fees plus fare difference.</li></ul></div>
+<div class="imp" style="background:#f4f8fc"><span class="hd" style="background:var(--blue)">CANCELLATION POLICIES</span><ul>{hotels}<li><b>Flights</b>: {e(cancellation(fl, flight_context(M, fl)))}</li></ul></div>
 <div class="sec" style="margin-top:8mm">How to Book</div>
 <div class="steps"><div><b>1. Flights</b>Search {M["flight_source"]} for {M["origin_code"]} ⇄ {e(fl["airport"].split("(")[-1].rstrip(")"))}, {M["dates_book"]}, {M["pax"].lower()}, and pick the flights named on the Flight Details page.</div>
 <div><b>2. Stays</b>Book each property on Booking.com for the exact dates shown. Choose the room type listed so the price matches.</div>
 <div><b>3. Ground</b>Pre-book the Day 1 airport cab and any permit tours a day ahead; pay shared jeeps and local taxis in cash.</div></div>
-<div class="disc">This is an independent itinerary in a holiday-quote layout, built for your trip on {CAPTURED}. It is not issued by any travel agency. Prices are those seen online at the time of capture and will change until you book; availability is not held. Please re-check every price, timing and policy on the booking page before paying.</div>
+<div class="disc">This is an independent itinerary in a holiday-quote layout, built for your trip on {NOW.strftime("%d %b %Y")}. It is not issued by any travel agency. {"Sample prices are unverified; research current rates before booking;" if ALLOW_UNVERIFIED else "Prices are researcher-supplied sourced quotes, not independently fetched by this builder; they change until booked;"} availability is not held. Please re-check every price, timing and policy on the booking page before paying.</div>
 <div class="cred"><b>Photo credits</b> – Property photos: the hotels' own Booking.com listings. Destination photos via Wikimedia Commons: {"; ".join(cred)}.</div>
 </div></section>''')
     return f'<!doctype html><html><head><meta charset="utf-8"><title>{e(T["title"])} – {e(M["theme"])}</title><style>{CSS}</style></head><body>{"".join(P)}</body></html>', total
 
 if __name__ == "__main__":
-    os.makedirs(OUT, exist_ok=True)
+    import argparse
+    parser = argparse.ArgumentParser(description="Build itineraries from validated researcher-supplied quotes")
+    parser.add_argument("trips")
+    parser.add_argument("img_dir")
+    parser.add_argument("out_dir")
+    parser.add_argument("--allow-unverified", action="store_true", help="Render illustrative samples with prominent unverified labels")
+    args = parser.parse_args()
+    spec = importlib.util.spec_from_file_location("trips", args.trips)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        configure(module.META, module.TRIPS, args.img_dir, args.out_dir, args.allow_unverified)
+    except (ValueError, KeyError) as exc:
+        parser.exit(2, str(exc) + "\n")
+    os.makedirs(WORK, exist_ok=True)
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         b = p.chromium.launch()

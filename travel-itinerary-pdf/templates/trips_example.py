@@ -7,6 +7,7 @@ CAPTURED = "19 Nov 2026"
 
 # Trip-wide settings used by build.py. Edit these first for a new trip.
 META = dict(
+    departure_date="2026-11-21", return_date="2026-11-27",
     captured=CAPTURED,                 # date live prices were captured
     names=[],                          # traveller names for the cover, e.g. ["Aarav", "Meera"]; empty = generic
     prepared_for="You & your partner",    # fallback cover label when names is empty
@@ -57,7 +58,7 @@ SIKKIM = dict(
                         area="Pelling", near="1.1 km from Upper Pelling, on the Pelling–Gyalshing road", cin="24 Nov, Tue • from 12:30 PM", cout="27 Nov, Fri • by 11 AM",
                         room="Standard Double Room x 1", nights=3, price=6559, meal="Room only (à la carte breakfast available)", bed="1 double bed",
                         incl=["Garden & terrace with sun deck","Outdoor fireplace / bonfire area","Flat-screen TV, private bathroom with bath","Free WiFi & free parking","Mini-market on site"],
-                        policy="Non-refundable rate as listed on Booking.com", note="Upgrade option: The Nettle & Fern Farmstay, Superior King (9.1/10, 148 reviews) – ₹10,185 for 3 nights, free cancellation."),
+                        policy="Non-refundable rate as listed on Booking.com", note="Upgrade option: The Nettle & Fern Farmstay, Superior King (9.1/10, 148 reviews) – ₹10,185 for 3 nights; check the selected rate’s cancellation deadline and fees."),
     },
     days=[
         dict(date="Sat, 21 Nov 2026", city="Gangtok", items=[
@@ -347,7 +348,7 @@ GARHWAL = dict(
         ("Entry fees", "Tiger Falls, Surkanda ropeway, Dhanaulti eco-park (2 pax)", 600, "Estimate"),
         ("Meals", "7 days × ₹1,000 for two", 7000, "Estimate"),
     ],
-    budget_note=("This plan sits at the top of your range. Both stays have free cancellation, so you can book now and adjust. "
+    budget_note=("This plan sits at the top of your range. Check each selected room rate for cancellation terms before booking. "
                  "The 08:55 return flight saves ₹1,148 but means leaving Kanatal at 5 AM; Lakhamandal and Tehri boating are optional extras."),
     info=[
         "No permits needed. Chakrata is a cantonment: do not photograph army installations.",
@@ -360,3 +361,11 @@ GARHWAL = dict(
 )
 
 TRIPS = [SIKKIM, KANGRA, GARHWAL]
+
+# Historical examples deliberately have no rate evidence. Use --allow-unverified for demos.
+# Real research must replace these dates and attach per-quote evidence (see README).
+for trip in TRIPS:
+    for hotel in trip["hotels"].values():
+        hotel["checkin_date"] = "2026-11-" + hotel["cin"][:2]
+        hotel["checkout_date"] = "2026-11-" + hotel["cout"][:2]
+        hotel.pop("policy", None)  # Legacy prose is not verified policy evidence.
